@@ -1,0 +1,97 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: CloudFormation template with YAML - ALB. Depends On 1-vpc-cfn.yml, 2-sg-cfn.yml.
+
+Mappings:
+  DeployEnvironmentMap:
+    Production:
+      "Protocol": "HTTPS"
+      "Port": 443
+    Staging:
+      "Protocol": "HTTP"
+      "Port": 80
+    Dev:
+      "Protocol": "HTTP"
+      "Port": 80
+
+Parameters:
+  VPCName:
+    Description: Target VPC Name
+    Type: String
+    MinLength: 1
+    MaxLength: 255
+    AllowedPattern: ^[a-zA-Z][-a-zA-Z0-9]*$
+    Default: debugroom-sample-aws-xray-vpc
+  EnvType:
+    Description: Which environments to deploy your service.
+    Type: String
+    AllowedValues: ["Dev", "Staging", "Production"]
+    Default: Dev
+  FrontendDefaultHealthCheckPath:
+    Description: Frontend Service Default health check path
+    Type: String
+    MinLength: 1
+    MaxLength: 255
+    AllowedPattern: ^[-¥.¥/a-zA-Z0-9]*$
+    Default: /frontend/healthcheck
+
+Resources:
+  FrontendALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: FrontendALB
+      Subnets:
+        - Fn::ImportValue: !Sub ${VPCName}-PublicSubnet1
+        - Fn::ImportValue: !Sub ${VPCName}-PublicSubnet2
+      SecurityGroups:
+        - Fn::ImportValue: !Sub ${VPCName}-SecurityGroupFrontendALB
+
+  FrontendALBDefaultTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: BackendALBDefaultTargetGroup
+      VpcId:
+        Fn::ImportValue: !Sub ${VPCName}-VPCID
+      Port: !FindInMap [DeployEnvironmentMap, !Ref EnvType, Port]
+      Protocol: !FindInMap [DeployEnvironmentMap, !Ref EnvType, Protocol]
+      HealthCheckPath: !Ref FrontendDefaultHealthCheckPath
+      HealthCheckIntervalSeconds: 60
+      HealthyThresholdCount: 2
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '60'
+
+  FrontendALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref FrontendALB
+      Port: !FindInMap [DeployEnvironmentMap, !Ref EnvType, Port]
+      Protocol: !FindInMap [DeployEnvironmentMap, !Ref EnvType, Protocol]
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref FrontendALBDefaultTargetGroup
+
+Outputs:
+  FrontendALB:
+    Description: Backend ALB
+    Value: !Ref FrontendALB
+    Export:
+      Name: !Sub ${VPCName}-FrontendALB-${EnvType}
+
+  FrontendALBDNS:
+    Description: Public DNS Name
+    Value: !GetAtt FrontendALB.DNSName
+    Export:
+      Name: !Sub ${VPCName}-FrontendALBDNS-${EnvType}
+
+  FrontendALBDefaultTargetGroup:
+    Description: Frontend TagetGroup Default
+    Value: !Ref FrontendALBDefaultTargetGroup
+    Export:
+      Name: !Sub ${VPCName}-FrontendALB-DefaultTargetGroup-${EnvType}
+
+  FrontendALBListener:
+    Description: Frontend ALB Listener
+    Value: !Ref FrontendALBListener
+    Export:
+      Name: !Sub ${VPCName}-FrontendALB-Listener-${EnvType}

@@ -1,0 +1,120 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: CloudFormation template with YAML - ECS Cluster Depends on 1-vpc-cfn.yml, 2-sg-cfn.yml
+
+Parameters:
+  VPCName:
+    Description: Target VPC Stack Name
+    Type: String
+    MinLength: 1
+    MaxLength: 255
+    AllowedPattern: ^[a-zA-Z][-a-zA-Z0-9]*$
+    Default: debugroom-sample-aws-xray-vpc
+  ECSAMI:
+    Description: AMI ID
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id
+  EnvType:
+    Description: Which environments to deploy your service.
+    Type: String
+    AllowedValues:
+      - Dev
+      - Staging
+      - Production
+    Default: Dev
+
+Mappings:
+  FrontendClusterDefinitionMap:
+    Production:
+      "InstanceType" : "r4.large"
+      "DesiredCapacity" : 1
+      "EC2InstanceMaxSizeOfECS": 3
+      "KeyPairName" : "test"
+    Staging:
+      "InstanceType": "r4.large"
+      "DesiredCapacity": 1
+      "EC2InstanceMaxSizeOfECS": 3
+      "KeyPairName": "test"
+    Dev:
+      "InstanceType": "r4.large"
+      "DesiredCapacity": 1
+      "EC2InstanceMaxSizeOfECS": 3
+      "KeyPairName": "test"
+
+Resources:
+  FrontendECSRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  FrontendIamInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref FrontendECSRole
+
+  FrontendECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${VPCName}-frontend-cluster-${EnvType}
+      Tags:
+        - Key: Name
+          Value: !Sub FrontendECSCluster-${EnvType}
+
+  FrontendECSAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - Fn::ImportValue: !Sub ${VPCName}-PublicSubnet1
+        - Fn::ImportValue: !Sub ${VPCName}-PublicSubnet2
+      LaunchConfigurationName: !Ref FrontendECSLaunchConfiguration
+      MinSize: '0'
+      MaxSize: !FindInMap [FrontendClusterDefinitionMap, !Ref EnvType, EC2InstanceMaxSizeOfECS]
+      DesiredCapacity: !FindInMap [FrontendClusterDefinitionMap, !Ref EnvType, DesiredCapacity]
+      Tags:
+        - Key: Name
+          Value: !Sub FrontendECSCluster-${EnvType}
+          PropagateAtLaunch: true
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT5M
+    UpdatePolicy:
+      AutoScalingReplacingUpdate:
+        WillReplace: true
+
+  FrontendECSLaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !Ref ECSAMI
+      InstanceType: !FindInMap [FrontendClusterDefinitionMap, !Ref EnvType, InstanceType]
+      IamInstanceProfile: !Ref FrontendIamInstanceProfile
+      KeyName: !FindInMap [FrontendClusterDefinitionMap, !Ref EnvType, KeyPairName]
+      SecurityGroups:
+        - Fn::ImportValue: !Sub ${VPCName}-SecurityGroupFrontendEcsCluster
+      AssociatePublicIpAddress: true
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          echo ECS_CLUSTER=${FrontendECSCluster} >> /etc/ecs/ecs.config
+          yum install -y aws-cfn-bootstrap jq
+          region=$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .region)
+          # Install the SSM agent RPM
+          yum install -y https://amazon-ssm-${AWS::Region}.s3.amazonaws.com/latest/linux_amd64/amazon-ssm-agent.rpm
+          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource FrontendECSAutoScalingGroup --region ${AWS::Region}
+
+Outputs:
+  FrontendECSCluster:
+    Description: Frontend ECS Cluster
+    Value: !Ref FrontendECSCluster
+    Export:
+      Name: !Sub ${VPCName}-FrontendEcsCluster-${EnvType}

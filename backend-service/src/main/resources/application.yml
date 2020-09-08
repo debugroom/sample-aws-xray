@@ -1,0 +1,10 @@
+spring:
+  profiles:
+    active: dev
+  datasource:
+    initialization-mode: always
+    schema: classpath*:/schema-postgresql.sql
+    data: classpath*:/data-postgresql.sql
+server:
+  servlet:
+    context-path: /backend/user
